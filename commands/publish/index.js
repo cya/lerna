@@ -36,6 +36,8 @@ const getPackagesWithoutLicense = require("./lib/get-packages-without-license");
 const gitCheckout = require("./lib/git-checkout");
 const removeTempLicenses = require("./lib/remove-temp-licenses");
 const verifyNpmPackageAccess = require("./lib/verify-npm-package-access");
+const getTwoFactorAuthRequired = require("./lib/get-two-factor-auth-required");
+const promptOneTimePassword = require("./lib/prompt-one-time-password");
 
 module.exports = factory;
 
@@ -403,6 +405,10 @@ class PublishCommand extends Command {
     // if no username was retrieved, don't bother validating
     if (this.conf.get("username") && this.verifyAccess) {
       chain = chain.then(() => verifyNpmPackageAccess(this.packagesToPublish, this.conf.snapshot));
+      chain = chain.then(() => getTwoFactorAuthRequired(this.conf.snapshot));
+      chain = chain.then(isRequired => {
+        this.twoFactorAuthRequired = isRequired;
+      });
     }
 
     return chain;
@@ -500,6 +506,14 @@ class PublishCommand extends Command {
       });
   }
 
+  requestOneTimePassword() {
+    return Promise.resolve()
+      .then(() => promptOneTimePassword())
+      .then(otp => {
+        this.npmConfig.otp = otp;
+      });
+  }
+
   packUpdated() {
     const tracker = this.logger.newItem("npm pack");
 
@@ -555,6 +569,10 @@ class PublishCommand extends Command {
 
     let chain = Promise.resolve();
 
+    if (this.twoFactorAuthRequired) {
+      chain = chain.then(() => this.requestOneTimePassword());
+    }
+
     const opts = this.conf.snapshot;
     const mapper = pPipe(
       [
@@ -589,6 +607,12 @@ class PublishCommand extends Command {
     tracker.addWork(this.packagesToPublish.length);
 
     let chain = Promise.resolve();
+
+    // there's no reasonable way to guess if the OTP has expired already,
+    // so we have to ask for it every time
+    if (this.twoFactorAuthRequired) {
+      chain = chain.then(() => this.requestOneTimePassword());
+    }
 
     const opts = this.conf.snapshot;
     const mapper = pPipe([
